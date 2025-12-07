@@ -1,0 +1,54 @@
+name: Run All Unit Tests
+
+on: [push, pull_request]
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+    
+    - name: Install packages
+      run: |
+        pip install fastapi sqlalchemy[asyncio] pydantic pytest pytest-asyncio aiosqlite
+    
+    - name: Run unit tests
+      run: |
+        # Set Python path to include project root
+        export PYTHONPATH="${PYTHONPATH}:$(pwd)"
+        echo "PYTHONPATH set to: $PYTHONPATH"
+        
+        # Save all test output to a file
+        {
+          echo "=== UNIT TEST RESULTS ==="
+          echo "Run date: $(date)"
+          echo "Working directory: $(pwd)"
+          echo "Directory contents:"
+          ls -la
+          echo ""
+          
+          echo "1. Testing CRUD operations..."
+          cd tests/unit && python test_crud.py
+          
+          echo ""
+          echo "2. Testing Database models..."
+          cd ../.. && cd tests/unit && python test_models.py
+          
+          echo ""
+          echo "3. Testing Schema validation..."
+          cd ../.. && cd tests/unit && python test_schemas.py
+        } 2>&1 | tee test_output.log
+        
+        # Check if tests passed
+        if grep -q "ALL .* UNIT TESTS PASSED" test_output.log; then
+          echo "✅ All unit tests passed!"
+        else
+          echo "❌ Some tests failed"
+          exit 1
+        fi
