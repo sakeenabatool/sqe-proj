@@ -1,215 +1,156 @@
-"""
-Performance Testing for Backend API
-Testing load times, response times, and concurrent handling
-"""
-import sys
-import os
+import pytest
 import time
-import asyncio
-from datetime import datetime
+import statistics
+from http import HTTPStatus
+from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
+import random
+import uuid
 
-# Add project root to Python path
-current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(os.path.dirname(current_dir))
-sys.path.insert(0, project_root)
+pytestmark = pytest.mark.asyncio
 
-print("=" * 70)
-print("PERFORMANCE TESTING - Rental Properties Backend")
-print("=" * 70)
-print()
 
-class PerformanceTests:
-    """Performance testing for backend API"""
+# ============ BASIC PERFORMANCE TESTS THAT WORK ============
+
+async def test_create_property_performance(client: AsyncClient):
+    """Test performance of creating a single property"""
+    start_time = time.time()
     
-    def test_single_request_response_time(self):
-        """Test response time for single API request"""
-        print("✅ Performance Test: Single Request Response Time")
-        print("-" * 50)
-        
-        # Simulate API request processing time
+    response = await client.post(
+        '/property/',
+        json={
+            'description': 'Performance test property',
+            'number_bedrooms': 'T2',
+            'price': 1500.50,
+            'area': 85.5,
+            'location': 'Performance Test Location',
+        },
+    )
+    
+    elapsed_time = time.time() - start_time
+    
+    assert response.status_code == HTTPStatus.CREATED
+    print(f"\n✅ Single property creation time: {elapsed_time:.4f} seconds")
+    assert elapsed_time < 0.5  # Should be under 500ms
+
+
+async def test_bulk_create_performance(client: AsyncClient):
+    """Test performance of creating multiple properties sequentially"""
+    times = []
+    house_types = ['T0', 'T1', 'T2', 'T3']
+    
+    for i in range(10):
         start_time = time.time()
         
-        # Simulate typical API processing steps:
-        # 1. Request parsing and validation (5-20ms)
-        time.sleep(0.015)  # 15ms for request parsing
+        response = await client.post(
+            '/property/',
+            json={
+                'description': f'Bulk Test Property {i}',
+                'number_bedrooms': random.choice(house_types),
+                'price': random.uniform(500, 3000),
+                'area': random.uniform(30, 150),
+                'location': f'Location {i}',
+            },
+        )
         
-        # 2. Database query execution (10-50ms)
-        time.sleep(0.025)  # 25ms for database query
+        elapsed_time = time.time() - start_time
+        times.append(elapsed_time)
         
-        # 3. Response serialization (5-15ms)
-        time.sleep(0.010)  # 10ms for response serialization
-        
-        end_time = time.time()
-        response_time = (end_time - start_time) * 1000  # Convert to ms
-        
-        print(f"   Simulated Response Time: {response_time:.2f} ms")
-        
-        # Performance benchmarks
-        benchmarks = {
-            "Excellent": 100,   # < 100ms
-            "Good": 200,        # < 200ms
-            "Acceptable": 500,  # < 500ms
-            "Poor": 1000        # < 1000ms
-        }
-        
-        print("\n   Performance Benchmarks:")
-        for category, threshold in benchmarks.items():
-            if response_time <= threshold:
-                print(f"   ✓ {category}: < {threshold}ms (✓ Achieved)")
-                break
-            else:
-                print(f"   - {category}: < {threshold}ms")
-        
-        print("\n   📊 Expected Real-World Performance:")
-        print("     • Database: PostgreSQL with proper indexing")
-        print("     • API: FastAPI with async endpoints")
-        print("     • Typical response: 50-200ms")
-        
-        return response_time
+        assert response.status_code == HTTPStatus.CREATED
     
-    def test_concurrent_requests_handling(self):
-        """Test handling of concurrent API requests"""
-        print("\n✅ Performance Test: Concurrent Request Handling")
-        print("-" * 50)
-        
-        print("   Simulating 10 concurrent requests...")
-        
-        # Simulate concurrent processing
+    avg_time = statistics.mean(times)
+    max_time = max(times)
+    min_time = min(times)
+    
+    print(f"\n📊 Bulk create performance (10 properties):")
+    print(f"  Average: {avg_time:.4f}s")
+    print(f"  Min: {min_time:.4f}s")
+    print(f"  Max: {max_time:.4f}s")
+    print(f"  Std Dev: {statistics.stdev(times):.4f}s")
+    
+    assert avg_time < 0.3  # Average should be under 300ms
+
+
+async def test_database_query_performance(session: AsyncSession):
+    """Test raw database query performance"""
+    import time
+    
+    # Test 1: Count query
+    from sqlalchemy import func, select
+    from backend.model import Property
+    
+    start_time = time.time()
+    result = await session.execute(select(func.count()).select_from(Property))
+    count = result.scalar()
+    count_time = time.time() - start_time
+    
+    print(f"\n🗃️ Database query performance:")
+    print(f"  Count query time: {count_time:.4f}s")
+    print(f"  Total properties: {count}")
+    
+    assert count_time < 0.1  # Should be very fast
+    
+    # Test 2: Filtered query
+    start_time = time.time()
+    result = await session.execute(
+        select(Property).where(Property.price > 1000).limit(10)
+    )
+    properties = result.scalars().all()
+    filter_time = time.time() - start_time
+    
+    print(f"  Filtered query time: {filter_time:.4f}s")
+    print(f"  Properties found: {len(properties)}")
+    
+    assert filter_time < 0.15
+
+
+async def test_pagination_performance(client: AsyncClient):
+    """Test performance with pagination"""
+    
+    # First create some properties for testing
+    for i in range(50):
+        await client.post(
+            '/property/',
+            json={
+                'description': f'Pagination test property {i}',
+                'number_bedrooms': 'T1',
+                'price': 1000 + i*50,
+                'area': 50 + i*2,
+                'location': f'Location {i % 10}',
+            },
+        )
+    
+    # Test different page sizes
+    page_sizes = [10, 25, 50]
+    
+    print(f"\n📄 Pagination performance:")
+    for page_size in page_sizes:
         start_time = time.time()
+        response = await client.get(f'/property/?skip=0&limit={page_size}')
+        elapsed_time = time.time() - start_time
         
-        # Create mock concurrent requests
-        request_times = []
-        for i in range(10):
-            request_start = time.time()
-            # Simulate request processing
-            time.sleep(0.05)  # 50ms per request
-            request_end = time.time()
-            request_times.append((request_end - request_start) * 1000)
+        assert response.status_code == HTTPStatus.OK
+        data = response.json()
         
-        total_time = (time.time() - start_time) * 1000
-        
-        avg_request_time = sum(request_times) / len(request_times)
-        max_request_time = max(request_times)
-        min_request_time = min(request_times)
-        
-        print(f"   Total time for 10 requests: {total_time:.2f} ms")
-        print(f"   Average request time: {avg_request_time:.2f} ms")
-        print(f"   Fastest request: {min_request_time:.2f} ms")
-        print(f"   Slowest request: {max_request_time:.2f} ms")
-        
-        print("\n   📈 Concurrent Performance Analysis:")
-        print("     • Async endpoint handling: ✓ Supported")
-        print("     • Database connection pool: ✓ Required")
-        print("     • Concurrent user capacity: 50-100 users")
-        print("     • Scalability: Horizontal scaling possible")
-        
-        return {
-            "total_time": total_time,
-            "avg_time": avg_request_time,
-            "concurrent_requests": 10
-        }
-    
-    def test_database_query_performance(self):
-        """Test database query performance patterns"""
-        print("\n✅ Performance Test: Database Query Patterns")
-        print("-" * 50)
-        
-        query_types = [
-            ("Simple SELECT by ID", 0.010, "Primary key lookup"),
-            ("SELECT with WHERE clause", 0.020, "Indexed column"),
-            ("SELECT with JOIN", 0.050, "Related tables"),
-            ("SELECT with ORDER BY", 0.030, "Sorting overhead"),
-            ("INSERT operation", 0.015, "Write operation"),
-            ("UPDATE operation", 0.025, "Read + write"),
-            ("DELETE operation", 0.020, "Write operation")
-        ]
-        
-        print("   Query Type Analysis:")
-        for query_name, expected_time, notes in query_types:
-            # Simulate query execution
-            time.sleep(expected_time)
-            print(f"   • {query_name}: {expected_time*1000:.1f}ms ({notes})")
-        
-        print("\n   🗄️  Database Performance Optimizations:")
-        print("     • Indexes on frequently queried columns")
-        print("     • Connection pooling for reduced overhead")
-        print("     • Query optimization with EXPLAIN ANALYZE")
-        print("     • Caching for frequently accessed data")
-        
-        return query_types
-    
-    def test_api_endpoint_performance_analysis(self):
-        """Analyze performance of different API endpoints"""
-        print("\n✅ Performance Analysis: API Endpoints")
-        print("-" * 50)
-        
-        endpoints = [
-            ("POST /property/", "Create property", 0.060, "Write + validation"),
-            ("GET /property/", "List properties", 0.040, "Read multiple"),
-            ("GET /property/{id}", "Get property", 0.020, "Read single"),
-            ("PATCH /property/{id}", "Update property", 0.050, "Read + write"),
-            ("DELETE /property/{id}", "Delete property", 0.035, "Write")
-        ]
-        
-        print("   Endpoint Performance Characteristics:")
-        for endpoint, description, expected_time, complexity in endpoints:
-            print(f"   • {endpoint}")
-            print(f"     Description: {description}")
-            print(f"     Expected: {expected_time*1000:.1f}ms")
-            print(f"     Complexity: {complexity}")
-        
-        print("\n   🚀 Performance Recommendations:")
-        print("     1. Implement response caching for GET endpoints")
-        print("     2. Use pagination for listing endpoints")
-        print("     3. Consider async database drivers")
-        print("     4. Monitor slow queries with logging")
-        print("     5. Implement rate limiting if needed")
-        
-        return endpoints
+        print(f"  Page size {page_size:3d}: {elapsed_time:.4f}s - {len(data.get('properties', []))} properties")
 
-def generate_performance_report():
-    """Generate comprehensive performance test report"""
-    print("\n" + "=" * 70)
-    print("PERFORMANCE TEST REPORT")
-    print("=" * 70)
-    
-    tests = PerformanceTests()
-    
-    # Run tests
-    single_response = tests.test_single_request_response_time()
-    print()
-    
-    concurrent_results = tests.test_concurrent_requests_handling()
-    print()
-    
-    tests.test_database_query_performance()
-    print()
-    
-    tests.test_api_endpoint_performance_analysis()
-    
-    print("\n" + "=" * 70)
-    print("📈 PERFORMANCE TEST SUMMARY")
-    print("=" * 70)
-    
-    print("\n✅ Performance Metrics:")
-    print(f"   • Single Request: {single_response:.2f} ms")
-    print(f"   • Concurrent (10): {concurrent_results['avg_time']:.2f} ms avg")
-    print(f"   • Expected Scale: 50-100 concurrent users")
-    
-    print("\n✅ Performance Requirements Met:")
-    print("   ✓ Response times under 500ms (acceptable)")
-    print("   ✓ Concurrent request handling")
-    print("   ✓ Database query optimization")
-    print("   ✓ API endpoint efficiency")
-    
-    print("\n🔧 Recommended Tools for Production:")
-    print("   • Load testing: Locust, k6, Apache JMeter")
-    print("   • Monitoring: Prometheus + Grafana")
-    print("   • Profiling: py-spy, cProfile")
-    print("   • APM: New Relic, Datadog, Elastic APM")
-    
-    print("\n🎯 Meets Test Plan Requirement:")
-    print('   "Performance testing (load times, response times)"')
 
-if __name__ == "__main__":
-    generate_performance_report()
+async def test_not_found_performance(client: AsyncClient):
+    """Test performance of non-existent resource lookups"""
+    times = []
+    
+    for i in range(10):
+        start_time = time.time()
+        response = await client.get(f'/property/999999{i}')
+        elapsed_time = time.time() - start_time
+        times.append(elapsed_time)
+        
+        assert response.status_code == HTTPStatus.NOT_FOUND
+    
+    avg_time = statistics.mean(times)
+    
+    print(f"\n❌ Not-found performance:")
+    print(f"  Average 404 response time: {avg_time:.4f}s")
+    
+    # 404 responses should be fast (faster than actual lookups)
+    assert avg_time < 0.05  # Should be under 50ms
